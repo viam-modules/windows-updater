@@ -27,7 +27,7 @@ import (
 )
 
 var (
-	Updater           = resource.NewModel("njooma", "windows_autoupdate", "updater")
+	Updater           = resource.NewModel("viam", "windows_autoupdate", "updater")
 	errNoUpdateNeeded = errors.New("no update needed")
 )
 
@@ -50,12 +50,12 @@ type Config struct {
 	ForceInstall           bool     `json:"force_install"`
 }
 
-func (cfg *Config) Validate(path string) ([]string, error) {
+func (cfg *Config) Validate(path string) ([]string, []string, error) {
 	_, err := url.Parse(cfg.DownloadURL)
 	if err != nil {
-		return nil, fmt.Errorf("invalid address '%s' for component at path '%s': %w", cfg.DownloadURL, path, err)
+		return nil, nil, fmt.Errorf("invalid address '%s' for component at path '%s': %w", cfg.DownloadURL, path, err)
 	}
-	return nil, nil
+	return nil, nil, nil
 }
 
 type windowsAutoupdateUpdater struct {
