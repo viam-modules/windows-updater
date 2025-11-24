@@ -27,7 +27,7 @@ import (
 )
 
 var (
-	Updater           = resource.NewModel("njooma", "windows_autoupdate", "updater")
+	Updater           = resource.NewModel("viam", "windows_autoupdate", "updater")
 	errNoUpdateNeeded = errors.New("no update needed")
 )
 
