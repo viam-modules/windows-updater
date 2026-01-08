@@ -482,16 +482,25 @@ func (s *windowsAutoupdateUpdater) DoCommand(ctx context.Context, cmd map[string
 	// Some of the config parameters can be overridden dynamically
 	lookupkey, ok := cmd["registry_lookup_key"]
 	if ok {
+		defer func( origRegistryLookupKey string ) {
+			s.cfg.RegistryLookupKey = origRegistryLookupKey
+		}(s.cfg.RegistryLookupKey)
 		s.cfg.RegistryLookupKey = lookupkey.(string)
 	}
 
 	lookupvalue, ok := cmd["registry_lookup_value"]
 	if ok {
+		defer func( origRegistryLookupValue string ) {
+			s.cfg.RegistryLookupValue = origRegistryLookupValue
+		}(s.cfg.RegistryLookupValue)
 		s.cfg.RegistryLookupValue = lookupvalue.(string)
 	}
 
 	downloadurl, ok := cmd["download_url"]
 	if ok {
+		defer func( origDownloadURL string ) {
+			s.cfg.DownloadURL = origDownloadURL
+		}(s.cfg.DownloadURL)
 		s.cfg.DownloadURL = downloadurl.(string)
 	}
 
