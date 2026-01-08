@@ -106,3 +106,13 @@ The module will not attempt to download or install the update if it detects that
 
 ## Usage
 The module will begin to download the update immediately upon (re)configuration. Send an empty `doCommand` to this component to start the remainder of the update process.
+
+The DoCommand can also be called with parameters to override the configuration attributes.
+
+```json
+{
+  "download_url":"https://example.com/setup.zip",
+  "registry_lookup_key":"DisplayName",
+  "registry_lookup_value":"Some Example Program"
+}
+```
