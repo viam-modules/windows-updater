@@ -479,6 +479,22 @@ func (s *windowsAutoupdateUpdater) installUpdate(installer string) error {
 }
 
 func (s *windowsAutoupdateUpdater) DoCommand(ctx context.Context, cmd map[string]interface{}) (map[string]interface{}, error) {
+	// Some of the config parameters can be overridden dynamically
+	lookupkey, ok := cmd["registry_lookup_key"]
+	if ok {
+		s.cfg.RegistryLookupKey = lookupkey.(string)
+	}
+
+	lookupvalue, ok := cmd["registry_lookup_value"]
+	if ok {
+		s.cfg.RegistryLookupValue = lookupvalue.(string)
+	}
+
+	downloadurl, ok := cmd["download_url"]
+	if ok {
+		s.cfg.DownloadURL = downloadurl.(string)
+	}
+
 	for utils.SelectContextOrWait(ctx, 1*time.Second) {
 		if s.downloadComplete {
 			break
