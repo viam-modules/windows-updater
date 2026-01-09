@@ -1,4 +1,3 @@
-.PHONY: module.tar.gz
 module.tar.gz:
 	GOOS=windows GOARCH=amd64 go build -ldflags="-s -w" .
 	rm -f $@
@@ -9,7 +8,7 @@ setup: clean update-rdk
 
 .PHONY: clean
 clean:
-	rm -rf $(BIN_OUTPUT_PATH)/module.tar.gz
+	rm -rf module.tar.gz windows_autoupdate.exe
 
 .PHONY: format
 format:

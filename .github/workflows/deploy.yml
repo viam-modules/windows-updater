@@ -8,13 +8,11 @@ jobs:
   publish:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - uses: viamrobotics/build-action@v1
         with:
-          # note: you can replace this line with 'version: ""' if
-          # you want to test the build process without deploying
           version: ${{ github.ref_name }}
           ref: ${{ github.sha }}
           key-id: ${{ secrets.VIAM_DEV_API_KEY_ID }}
           key-value: ${{ secrets.VIAM_DEV_API_KEY }}
-          token: ${{ github.token }} # only required for private git repos
+          token: ${{ github.token }}
