@@ -16,6 +16,8 @@ import (
 	"slices"
 	"strings"
 	"time"
+	"syscall"
+	"unsafe"
 
 	"github.com/cavaliergopher/grab/v3"
 	"go.viam.com/rdk/components/generic"
@@ -442,16 +444,23 @@ func (s *windowsAutoupdateUpdater) uninstallExistingInstallation() error {
 					script += " /quiet"
 				}
 
-				fullCommand := fmt.Sprintf("cmd /C %s", script)
-				s.logger.Infof("running uninstall command: %s", fullCommand)
-				cmd := exec.Command(fullCommand)
-				output, err := cmd.CombinedOutput()
-				if err != nil {
-					errors = append(errors, fmt.Errorf("encountered error uninstalling program: %s", string(output[:])))
-					continue
+				// Spawn the uninstaller in the foreground
+				s.logger.Infof("running uninstall command: %s", script)
+				syscallerr := SpawnProcess(script)
+				if syscallerr != nil {
+					s.logger.Infof("uninstall err: %v",syscallerr)
 				}
+
+				for {
+					lookupValue, _, err := sk.GetStringValue(s.cfg.RegistryLookupKey)
+					if err != nil {
+						break  // successfully finished uninstalling, the key no longer exists
+					}
+					s.logger.Infof("Waiting for %s to be uninstalled",lookupValue)
+					time.Sleep(1 * time.Second)
+				}
+				s.logger.Infof("successfully uninstalled: %s",s.cfg.RegistryLookupValue)
 				uninstallCount++
-				s.logger.Infof("successfully uninstalled: %s", string(output[:]))
 			}
 		}
 	}
@@ -467,14 +476,28 @@ func (s *windowsAutoupdateUpdater) uninstallExistingInstallation() error {
 
 func (s *windowsAutoupdateUpdater) installUpdate(installer string) error {
 	s.logger.Infof("installing update from %s", installer)
-	args := append([]string{"/C", installer}, s.cfg.InstallArgs...)
-	cmd := exec.Command("cmd", args...)
-	s.logger.Infof("installation command: %s", args)
-	output, err := cmd.CombinedOutput()
-	if err != nil {
-		return fmt.Errorf("encountered error installing program: %s", string(output[:]))
+
+	if slices.Contains(s.cfg.InstallArgs,"/quiet") {
+		// Run the install in the background thread
+		args := append([]string{"/C", installer}, s.cfg.InstallArgs...)
+		cmd := exec.Command("cmd", args...)
+		s.logger.Infof("installation command: %s", args)
+		output, err := cmd.CombinedOutput()
+		if err != nil {
+			return fmt.Errorf("encountered error installing program: %s", string(output[:]))
+		}
+		s.logger.Infof("successfully installed: %s", string(output[:]))
+	} else {
+		// Run the install in the foreground as an interactive installer
+		args := "cmd.exe /C '"+ installer + "' " + strings.Join(s.cfg.InstallArgs, " ")
+		s.logger.Infof("installation command: %s",args)
+		err := SpawnProcess(args)
+		if err != nil {
+			s.logger.Errorf("encountered error installing program: %v",err)
+			return err
+		}
+		s.logger.Infof("successfully installed")
 	}
-	s.logger.Infof("successfully installed: %s", string(output[:]))
 	return nil
 }
 
@@ -550,5 +573,65 @@ func (s *windowsAutoupdateUpdater) DoCommand(ctx context.Context, cmd map[string
 func (s *windowsAutoupdateUpdater) Close(context.Context) error {
 	// Put close code here
 	s.downloadWorkers.Stop()
+	return nil
+}
+
+func SpawnProcess(appPath string) error {
+	// Step 1: Get active session ID
+	sessionID := windows.WTSGetActiveConsoleSessionId()
+
+	// Step 2: Obtain user token from active session
+	var userToken windows.Token
+	err := windows.WTSQueryUserToken(sessionID, &userToken)
+	if err != nil {
+		return fmt.Errorf("WTSQueryUserToken failed: %w", err)
+	}
+	defer userToken.Close()
+
+	// Step 3: Duplicate token for CreateProcessAsUser
+	var duplicatedToken windows.Token
+	err = windows.DuplicateTokenEx(
+		userToken,
+		windows.MAXIMUM_ALLOWED,
+		nil,
+		windows.SecurityIdentification,
+		windows.TokenPrimary,
+		&duplicatedToken,
+	)
+	if err != nil {
+		return fmt.Errorf("DuplicateTokenEx failed: %w", err)
+	}
+	defer duplicatedToken.Close()
+
+	// Step 4: Set up startup info with WinSta0\Default desktop
+	var startupInfo windows.StartupInfo
+	startupInfo.Cb = uint32(unsafe.Sizeof(startupInfo))
+	startupInfo.Desktop = syscall.StringToUTF16Ptr("winsta0\\default")
+
+	var procInfo windows.ProcessInformation
+
+	cmdLine := syscall.StringToUTF16Ptr(appPath)
+
+	// Step 5: Create process as user in active session
+	err = windows.CreateProcessAsUser(
+		duplicatedToken,
+		nil,
+		cmdLine,
+		nil,
+		nil,
+		false,
+		0,
+		nil,
+		nil,
+		&startupInfo,
+		&procInfo,
+	)
+	if err != nil {
+		return fmt.Errorf("CreateProcessAsUser failed: %w", err)
+	}
+
+	defer windows.CloseHandle(procInfo.Thread)
+	defer windows.CloseHandle(procInfo.Process)
+
 	return nil
 }
