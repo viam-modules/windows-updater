@@ -2,6 +2,8 @@ package models
 
 import (
 	"testing"
+
+	"github.com/stretchr/testify/assert"
 )
 
 func TestSplitExeAndArgs(t *testing.T) {
@@ -120,28 +122,14 @@ func TestSplitExeAndArgs(t *testing.T) {
 			gotExe, gotArgs, err := SplitExeAndArgs(tt.input)
 
 			if tt.wantErr {
-				if err == nil {
-					t.Errorf("SplitExeAndArgs() expected error containing %q, got nil", tt.wantErrText)
-					return
-				}
-				if err.Error() != tt.wantErrText {
-					t.Errorf("SplitExeAndArgs() error = %q, want %q", err.Error(), tt.wantErrText)
-				}
+				assert.Error(t, err)
+				assert.EqualError(t, err, tt.wantErrText)
 				return
 			}
 
-			if err != nil {
-				t.Errorf("SplitExeAndArgs() unexpected error = %v", err)
-				return
-			}
-
-			if gotExe != tt.wantExe {
-				t.Errorf("SplitExeAndArgs() exe = %q, want %q", gotExe, tt.wantExe)
-			}
-
-			if gotArgs != tt.wantArgs {
-				t.Errorf("SplitExeAndArgs() args = %q, want %q", gotArgs, tt.wantArgs)
-			}
+			assert.NoError(t, err)
+			assert.Equal(t, tt.wantExe, gotExe)
+			assert.Equal(t, tt.wantArgs, gotArgs)
 		})
 	}
 }
