@@ -452,11 +452,13 @@ func (s *windowsAutoupdateUpdater) uninstallExistingInstallation() error {
 				// Launch the uninstaller in the active user session, wait for it to finish
 				fullCommand := fmt.Sprintf("%s %s", exe, args)
 				s.logger.Infof("uninstallation command: %s", fullCommand)
-				exitCode, err := s.LaunchInActiveUserSession(fullCommand, true)
+				exitCode, err := LaunchInActiveUserSession(fullCommand, true)
+				if exitCode != 0 {
+					s.logger.Infof("uninstaller exit code: %d", exitCode)
+				}
 				if err != nil {
 					s.logger.Fatalf("LaunchInActiveUserSession() uninstaller failed: %v", err)
 				}
-				s.logger.Infof("uninstaller exit code: %d", exitCode)
 				s.logger.Infof("successfully uninstalled: %s via %s", s.cfg.RegistryLookupValue, exe)
 
 				uninstallCount++
@@ -489,19 +491,21 @@ func (s *windowsAutoupdateUpdater) installUpdate(installer string) error {
 	} else {
 		// Run the install in the foreground as an interactive install
 		// Double double quotes is not a typo
-		//  Use /S and double double quotes to ensure cmd.exe parses the setup.exe correctly when the rest may contain quotes/spaces.
-		//  eg cmd.exe /S /C ""<command with spaces>" and /args here"
-		args := "C:\\windows\\system32\\cmd.exe /C \"\"" + installer + "\" " + strings.Join(s.cfg.InstallArgs, " ") + "\""
+		//  Use double double quotes to ensure cmd.exe parses the setup.exe correctly when the rest may contain quotes/spaces.
+		//  eg cmd.exe /C ""<command with spaces>" and /args here"
+		args := fmt.Sprintf(`C:\\windows\\system32\\cmd.exe /C ""%s" %s"`, installer, strings.Join(s.cfg.InstallArgs, " "))
 		args = strings.ReplaceAll(args, "/quiet", "")
 		s.logger.Infof("installation command: %s.", args)
 
-		exitCode, err := s.LaunchInActiveUserSession(args, true)
+		exitCode, err := LaunchInActiveUserSession(args, true)
+		if exitCode != 0 {
+			s.logger.Infof("installer exit code: %d", exitCode)
+		}
 		if err != nil {
 			s.logger.Errorf("LaunchInActiveUserSession() installer failed: %v", err)
 			return err
 		}
-		s.logger.Infof("installer exit code: %d", exitCode)
-		s.logger.Infof("successfully installed")
+		s.logger.Infof("successfully installed %s", s.cfg.RegistryLookupValue)
 	}
 	return nil
 }
@@ -624,7 +628,7 @@ func SplitExeAndArgs(cmd string) (exe string, args string, err error) {
 
 // LaunchInActiveUserSession launches an executable with args in the active console user's session.
 // wait: if true, waits for completion and returns the process exit code.
-func (s *windowsAutoupdateUpdater) LaunchInActiveUserSession(appPath string, wait bool) (uint32, error) {
+func LaunchInActiveUserSession(appPath string, wait bool) (uint32, error) {
 	sessionID := windows.WTSGetActiveConsoleSessionId()
 	if sessionID == 0xFFFFFFFF {
 		return 0, fmt.Errorf("no active console session")
