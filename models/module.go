@@ -16,7 +16,6 @@ import (
 	"slices"
 	"strings"
 	"time"
-	"syscall"
 	"unsafe"
 
 	"github.com/cavaliergopher/grab/v3"
@@ -438,28 +437,30 @@ func (s *windowsAutoupdateUpdater) uninstallExistingInstallation() error {
 						continue
 					}
 				}
+				s.logger.Infof("Windows provided uninstall script: %s", script)
 
-				// Force quiet uninstall if using MsiExec
-				if strings.Contains(script, "MsiExec.exe") {
-					script += " /quiet"
+				exe, args, err := SplitExeAndArgs(script)
+				if err != nil {
+					// No exe was specified
+					continue
 				}
+				s.logger.Infof("The exe is '%s' and the args are '%s'", exe, args)
 
-				// Spawn the uninstaller in the foreground
-				s.logger.Infof("running uninstall command: %s", script)
-				syscallerr := SpawnProcess(script)
-				if syscallerr != nil {
-					s.logger.Infof("uninstall err: %v",syscallerr)
-				}
+				// Replace all occurrences of /quiet with an empty string. Force interactive uninstall mode
+				args = strings.ReplaceAll(args, "/quiet", "")
 
-				for {
-					lookupValue, _, err := sk.GetStringValue(s.cfg.RegistryLookupKey)
-					if err != nil {
-						break  // successfully finished uninstalling, the key no longer exists
-					}
-					s.logger.Infof("Waiting for %s to be uninstalled",lookupValue)
-					time.Sleep(1 * time.Second)
+				// Launch the uninstaller in the active user session, wait for it to finish
+				fullCommand := fmt.Sprintf("%s %s", exe, args)
+				s.logger.Infof("uninstallation command: %s", fullCommand)
+				exitCode, err := LaunchInActiveUserSession(fullCommand, true)
+				if exitCode != 0 {
+					s.logger.Infof("uninstaller exit code: %d", exitCode)
 				}
-				s.logger.Infof("successfully uninstalled: %s",s.cfg.RegistryLookupValue)
+				if err != nil {
+					s.logger.Fatalf("LaunchInActiveUserSession() uninstaller failed: %v", err)
+				}
+				s.logger.Infof("successfully uninstalled: %s via %s", s.cfg.RegistryLookupValue, exe)
+
 				uninstallCount++
 			}
 		}
@@ -477,8 +478,8 @@ func (s *windowsAutoupdateUpdater) uninstallExistingInstallation() error {
 func (s *windowsAutoupdateUpdater) installUpdate(installer string) error {
 	s.logger.Infof("installing update from %s", installer)
 
-	if slices.Contains(s.cfg.InstallArgs,"/quiet") {
-		// Run the install in the background thread
+	if slices.Contains(s.cfg.InstallArgs, "/quiet") {
+		// Run the install in the background thread, using the Go exec command
 		args := append([]string{"/C", installer}, s.cfg.InstallArgs...)
 		cmd := exec.Command("cmd", args...)
 		s.logger.Infof("installation command: %s", args)
@@ -488,15 +489,23 @@ func (s *windowsAutoupdateUpdater) installUpdate(installer string) error {
 		}
 		s.logger.Infof("successfully installed: %s", string(output[:]))
 	} else {
-		// Run the install in the foreground as an interactive installer
-		args := "cmd.exe /C '"+ installer + "' " + strings.Join(s.cfg.InstallArgs, " ")
-		s.logger.Infof("installation command: %s",args)
-		err := SpawnProcess(args)
+		// Run the install in the foreground as an interactive install
+		// Double double quotes is not a typo
+		//  Use double double quotes to ensure cmd.exe parses the setup.exe correctly when the rest may contain quotes/spaces.
+		//  eg cmd.exe /C ""<command with spaces>" and /args here"
+		args := fmt.Sprintf(`C:\\windows\\system32\\cmd.exe /C ""%s" %s"`, installer, strings.Join(s.cfg.InstallArgs, " "))
+		args = strings.ReplaceAll(args, "/quiet", "")
+		s.logger.Infof("installation command: %s.", args)
+
+		exitCode, err := LaunchInActiveUserSession(args, true)
+		if exitCode != 0 {
+			s.logger.Infof("installer exit code: %d", exitCode)
+		}
 		if err != nil {
-			s.logger.Errorf("encountered error installing program: %v",err)
+			s.logger.Errorf("LaunchInActiveUserSession() installer failed: %v", err)
 			return err
 		}
-		s.logger.Infof("successfully installed")
+		s.logger.Infof("successfully installed %s", s.cfg.RegistryLookupValue)
 	}
 	return nil
 }
@@ -505,7 +514,7 @@ func (s *windowsAutoupdateUpdater) DoCommand(ctx context.Context, cmd map[string
 	// Some of the config parameters can be overridden dynamically
 	lookupkey, ok := cmd["registry_lookup_key"]
 	if ok {
-		defer func( origRegistryLookupKey string ) {
+		defer func(origRegistryLookupKey string) {
 			s.cfg.RegistryLookupKey = origRegistryLookupKey
 		}(s.cfg.RegistryLookupKey)
 		s.cfg.RegistryLookupKey = lookupkey.(string)
@@ -513,7 +522,7 @@ func (s *windowsAutoupdateUpdater) DoCommand(ctx context.Context, cmd map[string
 
 	lookupvalue, ok := cmd["registry_lookup_value"]
 	if ok {
-		defer func( origRegistryLookupValue string ) {
+		defer func(origRegistryLookupValue string) {
 			s.cfg.RegistryLookupValue = origRegistryLookupValue
 		}(s.cfg.RegistryLookupValue)
 		s.cfg.RegistryLookupValue = lookupvalue.(string)
@@ -521,7 +530,7 @@ func (s *windowsAutoupdateUpdater) DoCommand(ctx context.Context, cmd map[string
 
 	downloadurl, ok := cmd["download_url"]
 	if ok {
-		defer func( origDownloadURL string ) {
+		defer func(origDownloadURL string) {
 			s.cfg.DownloadURL = origDownloadURL
 		}(s.cfg.DownloadURL)
 		s.cfg.DownloadURL = downloadurl.(string)
@@ -576,62 +585,143 @@ func (s *windowsAutoupdateUpdater) Close(context.Context) error {
 	return nil
 }
 
-func SpawnProcess(appPath string) error {
-	// Step 1: Get active session ID
-	sessionID := windows.WTSGetActiveConsoleSessionId()
+// SplitExeAndArgs splits a Windows command line into executable (possibly quoted) and the remaining args.
+// It handles:
+//   - quoted executable paths: "C:\path with spaces\app.exe" /arg1 /arg2
+//   - unquoted executable paths containing spaces, by splitting at first .exe
+func SplitExeAndArgs(cmd string) (exe string, args string, err error) {
+	cmd = strings.TrimSpace(cmd)
+	if cmd == "" {
+		return "", "", errors.New("empty command line")
+	}
 
-	// Step 2: Obtain user token from active session
+	// Case 1: Executable is quoted: "...\something.exe" ...
+	if strings.HasPrefix(cmd, `"`) {
+		// Find the closing quote (we don't try to handle escaped quotes inside; Windows paths typically don't include them)
+		end := strings.Index(cmd[1:], `"`)
+		if end == -1 {
+			return "", "", errors.New("unterminated quoted executable")
+		}
+		end++ // compensate for the [1:] offset
+
+		exe = strings.TrimSpace(cmd[:end+1])  // include closing quote
+		args = strings.TrimSpace(cmd[end+1:]) // rest after closing quote
+		if exe == `""` {
+			return "", "", errors.New("empty quoted executable")
+		}
+		return exe, args, nil
+	}
+
+	// Case 2: Unquoted: split at first .exe (case-insensitive)
+	lower := strings.ToLower(cmd)
+	exeIdx := strings.Index(lower, ".exe")
+	if exeIdx == -1 {
+		return "", "", errors.New("no .exe found in command line")
+	}
+
+	exeEnd := exeIdx + len(".exe")
+	exe = strings.TrimSpace(cmd[:exeEnd])
+	args = strings.TrimSpace(cmd[exeEnd:])
+
+	return exe, args, nil
+}
+
+// LaunchInActiveUserSession launches an executable with args in the active console user's session.
+// wait: if true, waits for completion and returns the process exit code.
+func LaunchInActiveUserSession(appPath string, wait bool) (uint32, error) {
+	sessionID := windows.WTSGetActiveConsoleSessionId()
+	if sessionID == 0xFFFFFFFF {
+		return 0, fmt.Errorf("no active console session")
+	}
+
+	// 1) Get user token for the active session
 	var userToken windows.Token
-	err := windows.WTSQueryUserToken(sessionID, &userToken)
-	if err != nil {
-		return fmt.Errorf("WTSQueryUserToken failed: %w", err)
+	if err := windows.WTSQueryUserToken(sessionID, &userToken); err != nil {
+		return 0, fmt.Errorf("WTSQueryUserToken(session=%d): %w", sessionID, err)
 	}
 	defer userToken.Close()
 
-	// Step 3: Duplicate token for CreateProcessAsUser
-	var duplicatedToken windows.Token
-	err = windows.DuplicateTokenEx(
+	// 2) Duplicate token to PRIMARY token for CreateProcessAsUser
+	var primaryToken windows.Token
+	if err := windows.DuplicateTokenEx(
 		userToken,
 		windows.MAXIMUM_ALLOWED,
 		nil,
-		windows.SecurityIdentification,
+		windows.SecurityImpersonation,
 		windows.TokenPrimary,
-		&duplicatedToken,
-	)
-	if err != nil {
-		return fmt.Errorf("DuplicateTokenEx failed: %w", err)
+		&primaryToken,
+	); err != nil {
+		return 0, fmt.Errorf("DuplicateTokenEx: %w", err)
 	}
-	defer duplicatedToken.Close()
+	defer primaryToken.Close()
 
-	// Step 4: Set up startup info with WinSta0\Default desktop
-	var startupInfo windows.StartupInfo
-	startupInfo.Cb = uint32(unsafe.Sizeof(startupInfo))
-	startupInfo.Desktop = syscall.StringToUTF16Ptr("winsta0\\default")
+	// 3) Build environment block (optional but recommended for "acts like a user" behavior)
+	var env *uint16
+	if err := windows.CreateEnvironmentBlock(&env, primaryToken, false); err != nil {
+		// Not fatal; some environments block this. Proceed without it.
+		env = nil
+	} else {
+		defer windows.DestroyEnvironmentBlock(env)
+	}
 
-	var procInfo windows.ProcessInformation
+	// 4) Prepare StartupInfo / ProcessInformation
+	var si windows.StartupInfo
+	si.Cb = uint32(unsafe.Sizeof(si))
+	si.Desktop, _ = windows.UTF16PtrFromString("winsta0\\default")
 
-	cmdLine := syscall.StringToUTF16Ptr(appPath)
+	var pi windows.ProcessInformation
+	defer func() {
+		if pi.Thread != 0 {
+			_ = windows.CloseHandle(pi.Thread)
+		}
+		if pi.Process != 0 {
+			_ = windows.CloseHandle(pi.Process)
+		}
+	}()
 
-	// Step 5: Create process as user in active session
-	err = windows.CreateProcessAsUser(
-		duplicatedToken,
+	// 5) Build a CreateProcess-style command line.
+	// For CreateProcessAsUser, lpCommandLine must be a mutable buffer.
+	cmdLineUTF16, err := windows.UTF16FromString(appPath)
+	if err != nil {
+		return 0, fmt.Errorf("UTF16FromString(cmdLine): %w", err)
+	}
+
+	creationFlags := uint32(windows.CREATE_UNICODE_ENVIRONMENT)
+
+	var dirPtr *uint16
+	dirPtr, err = windows.UTF16PtrFromString(`C:\Windows\Temp`)
+
+	// 6) Create the process as the user.
+	if err := windows.CreateProcessAsUser(
+		primaryToken,
 		nil,
-		cmdLine,
+		&cmdLineUTF16[0],
 		nil,
 		nil,
 		false,
-		0,
-		nil,
-		nil,
-		&startupInfo,
-		&procInfo,
-	)
-	if err != nil {
-		return fmt.Errorf("CreateProcessAsUser failed: %w", err)
+		creationFlags,
+		env, // can be nil
+		dirPtr,
+		&si,
+		&pi,
+	); err != nil {
+		return 0, fmt.Errorf("CreateProcessAsUser: %w", err)
 	}
 
-	defer windows.CloseHandle(procInfo.Thread)
-	defer windows.CloseHandle(procInfo.Process)
+	if !wait {
+		return 0, nil
+	}
 
-	return nil
+	// 7) Wait and return exit code.
+	_, werr := windows.WaitForSingleObject(pi.Process, windows.INFINITE)
+	if werr != nil {
+		return 0, fmt.Errorf("WaitForSingleObject: %w", werr)
+	}
+
+	var exitCode uint32
+	if err := windows.GetExitCodeProcess(pi.Process, &exitCode); err != nil {
+		return 0, fmt.Errorf("GetExitCodeProcess: %w", err)
+	}
+
+	return exitCode, nil
 }
