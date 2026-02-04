@@ -118,6 +118,9 @@ func (s *windowsAutoupdateUpdater) downloadUpdate(ctx context.Context) (string, 
 	var destination string
 	if s.cfg.DownloadDestination != "" {
 		destination = s.cfg.DownloadDestination
+		if err := os.MkdirAll(destination, 0755); err != nil {
+			return "", err
+		}
 	} else {
 		var err error
 		destination, err = s.getCacheDir()
