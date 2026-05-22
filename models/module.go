@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"net/url"
 	"os"
@@ -51,6 +52,7 @@ type Config struct {
 	RegistryLookupValue    string   `json:"registry_lookup_value"`
 	AbortOnUninstallErrors bool     `json:"abort_on_uninstall_errors"`
 	ForceInstall           bool     `json:"force_install"`
+	DownloadRetryCount     int      `json:"download_retry_count"`
 }
 
 func (cfg *Config) Validate(path string) ([]string, []string, error) {
@@ -110,7 +112,7 @@ func (s *windowsAutoupdateUpdater) downloadIgnoringReturn(ctx context.Context) {
 }
 
 func (s *windowsAutoupdateUpdater) downloadUpdate(ctx context.Context) (string, error) {
-	if !s.updateHasChanged(ctx) {
+	if !s.updateHasChanged() {
 		s.logger.Infof("no update needed")
 		return "", errNoUpdateNeeded
 	}
@@ -138,50 +140,61 @@ func (s *windowsAutoupdateUpdater) downloadUpdate(ctx context.Context) (string, 
 
 	// start download
 	s.logger.Infof("downloading update from: %v", req.URL())
-	resp := client.Do(req)
 
-	if freeSpace, err := getFreeDiskSpace(destination[:2]); err == nil {
-		if freeSpace < uint64(resp.Size()*3) {
-			resp.Cancel()
-			return "", fmt.Errorf("not enough free space on drive %s: %d bytes available, %d bytes needed", destination[:2], freeSpace, resp.Size()*3)
+	var downloadErr error
+	retryCount := s.cfg.DownloadRetryCount
+	if retryCount == -1 {
+		retryCount = math.MaxInt
+	}
+	for retries := 0; retries < retryCount; retries++ {
+		resp := client.Do(req)
+
+		if freeSpace, err := getFreeDiskSpace(destination[:2]); err == nil {
+			if freeSpace < uint64(resp.Size()*3) {
+				resp.Cancel()
+				return "", fmt.Errorf("not enough free space on drive %s: %d bytes available, %d bytes needed", destination[:2], freeSpace, resp.Size()*3)
+			}
 		}
-	}
 
-	// start status loop
-	t := time.NewTicker(1 * time.Second)
-	defer t.Stop()
+		// start status loop
+		t := time.NewTicker(1 * time.Second)
+		defer t.Stop()
 
-Loop:
-	for {
-		select {
-		case <-t.C:
-			s.logger.Debugf("downloaded %v / %v bytes (%.2f%%)", resp.BytesComplete(), resp.Size(), 100*resp.Progress())
-		case <-resp.Done:
-			s.logger.Debugf("downloaded %v / %v bytes (%.2f%%)", resp.BytesComplete(), resp.Size(), 100*resp.Progress())
-			break Loop
+	Loop:
+		for {
+			select {
+			case <-t.C:
+				s.logger.Debugf("downloaded %v / %v bytes (%.2f%%)", resp.BytesComplete(), resp.Size(), 100*resp.Progress())
+			case <-resp.Done:
+				s.logger.Debugf("downloaded %v / %v bytes (%.2f%%)", resp.BytesComplete(), resp.Size(), 100*resp.Progress())
+				break Loop
+			}
 		}
-	}
 
-	// check for errors
-	if err := resp.Err(); err != nil {
-		return "", fmt.Errorf("could not download file: %w", err)
-	}
+		// check for errors
+		if err := resp.Err(); err != nil {
+			downloadErr = fmt.Errorf("could not download file on attempt %d: %w", retries+1, err)
+			continue
+		}
+		downloadErr = nil
 
-	// save download details
-	cacheDetails := cacheDetails{
-		DownloadURL:   s.cfg.DownloadURL,
-		ContentLength: resp.Size(),
-		ETag:          resp.HTTPResponse.Header.Get("etag"),
-		Installed:     false,
-	}
-	s.setCacheDetails(cacheDetails)
+		// save download details
+		cacheDetails := cacheDetails{
+			DownloadURL:   s.cfg.DownloadURL,
+			ContentLength: resp.Size(),
+			ETag:          resp.HTTPResponse.Header.Get("etag"),
+			Installed:     false,
+		}
+		s.setCacheDetails(cacheDetails)
 
-	// success
-	s.logger.Infof("update saved to %s", resp.Filename)
-	return resp.Filename, nil
+		// success
+		s.logger.Infof("update saved to %s", resp.Filename)
+		return resp.Filename, nil
+	}
+	return "", downloadErr
 }
 
-func (s *windowsAutoupdateUpdater) updateHasChanged(ctx context.Context) bool {
+func (s *windowsAutoupdateUpdater) updateHasChanged() bool {
 	if s.cfg.ForceInstall {
 		return true
 	}
@@ -515,7 +528,7 @@ func (s *windowsAutoupdateUpdater) installUpdate(installer string) error {
 	return nil
 }
 
-func (s *windowsAutoupdateUpdater) DoCommand(ctx context.Context, cmd map[string]interface{}) (map[string]interface{}, error) {
+func (s *windowsAutoupdateUpdater) DoCommand(ctx context.Context, cmd map[string]any) (map[string]any, error) {
 	// Some of the config parameters can be overridden dynamically
 	lookupkey, ok := cmd["registry_lookup_key"]
 	if ok {

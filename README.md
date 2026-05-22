@@ -22,6 +22,7 @@ The following attributes are available for this model:
 | `registry_lookup_value`     | string   | Optional  | Value for uninstaller                                             |
 | `abort_on_uninstall_errors` | bool     | Optional  | Should the update should fail if uninstallation encounters errors |
 | `force_install`             | bool     | Optional  | Install the update regardless of if the update has changed        |
+| `download_retry_count`      | number   | Optional  | How many times to retry a failed download. -1 is infinite.        |
 
 #### Example Configuration
 
@@ -36,7 +37,8 @@ The following attributes are available for this model:
   "registry_lookup_value": "My Windows Publisher, Inc.",
   "download_url": "https://example.com/MyInstaller.zip",
   "abort_on_uninstall_errors": true,
-  "force_install": false
+  "force_install": false,
+  "download_retry_count": 1,
 }
 ```
 
@@ -103,6 +105,11 @@ The module will first try to uninstall any existing installation (see `registry_
 **OPTIONAL** default: `false`
 
 The module will not attempt to download or install the update if it detects that nothing has changed (criteria: same URL, same content size, same etag). Use this option to force the update to download and install, regardless the lack of changes.
+
+### `download_retry_count`
+**OPTIONAL** default: `0`
+
+In the event of a failed download, the module can attempt to retry downloading the update. The default is `0`, meaning no retries. `-1` will make the module retry indefinitely until it succeeds.
 
 ## Usage
 The module will begin to download the update immediately upon (re)configuration. Send an empty `doCommand` to this component to start the remainder of the update process.
