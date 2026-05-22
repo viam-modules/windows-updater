@@ -109,7 +109,7 @@ The module will not attempt to download or install the update if it detects that
 ### `download_retry_count`
 **OPTIONAL** default: `0`
 
-In the event of a failed download, the module can attempt to retry downloading the update. The default is `0`, meaning no retries. `-1` will make the module retry indefinitely until it succeeds.
+In the event of a failed download, the module can attempt to retry downloading the update. The default is `0`, meaning no retries. `-1` will make the module retry indefinitely until it succeeds. There is a 10sec pause between retry attempts.
 
 ## Usage
 The module will begin to download the update immediately upon (re)configuration. Send an empty `doCommand` to this component to start the remainder of the update process.

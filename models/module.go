@@ -174,6 +174,7 @@ func (s *windowsAutoupdateUpdater) downloadUpdate(ctx context.Context) (string, 
 		// check for errors
 		if err := resp.Err(); err != nil {
 			downloadErr = fmt.Errorf("could not download file on attempt %d: %w", retries+1, err)
+			time.Sleep(10 * time.Second)
 			continue
 		}
 		downloadErr = nil
