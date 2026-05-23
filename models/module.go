@@ -71,6 +71,7 @@ type windowsAutoupdateUpdater struct {
 
 	downloadWorkers  utils.StoppableWorkers
 	downloadComplete bool
+	downloadStatus   string
 
 	resource.AlwaysRebuild
 }
@@ -103,6 +104,10 @@ func newWindowsAutoupdateUpdater(ctx context.Context, deps resource.Dependencies
 
 func (s *windowsAutoupdateUpdater) Name() resource.Name {
 	return s.name
+}
+
+func (s *windowsAutoupdateUpdater) Status(context.Context) (map[string]interface{}, error) {
+	return map[string]interface{}{"download_status": s.downloadStatus}, nil
 }
 
 func (s *windowsAutoupdateUpdater) downloadIgnoringReturn(ctx context.Context) {
@@ -164,9 +169,11 @@ func (s *windowsAutoupdateUpdater) downloadUpdate(ctx context.Context) (string, 
 		for {
 			select {
 			case <-t.C:
-				s.logger.Debugf("downloaded %v / %v bytes (%.2f%%)", resp.BytesComplete(), resp.Size(), 100*resp.Progress())
+				s.downloadStatus = fmt.Sprintf("downloaded %v / %v bytes (%.2f%%)", resp.BytesComplete(), resp.Size(), 100*resp.Progress())
+				s.logger.Debug(s.downloadStatus)
 			case <-resp.Done:
-				s.logger.Debugf("downloaded %v / %v bytes (%.2f%%)", resp.BytesComplete(), resp.Size(), 100*resp.Progress())
+				s.downloadStatus = fmt.Sprintf("download complete %v / %v bytes (%.2f%%)", resp.BytesComplete(), resp.Size(), 100*resp.Progress())
+				s.logger.Debug(s.downloadStatus)
 				break Loop
 			}
 		}
