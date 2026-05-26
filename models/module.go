@@ -60,6 +60,12 @@ func (cfg *Config) Validate(path string) ([]string, []string, error) {
 	if err != nil {
 		return nil, nil, fmt.Errorf("invalid address '%s' for component at path '%s': %w", cfg.DownloadURL, path, err)
 	}
+
+	// DownloadRetryCount counts retries beyond the first attempt, so add 1 for the total
+	// loop iterations. -1 is expanded to math.MaxInt ("retry forever") later.
+	if cfg.DownloadRetryCount != -1 {
+		cfg.DownloadRetryCount++
+	}
 	return nil, nil, nil
 }
 
@@ -71,6 +77,7 @@ type windowsAutoupdateUpdater struct {
 
 	downloadWorkers  utils.StoppableWorkers
 	downloadComplete bool
+	downloadStatus   string
 
 	resource.AlwaysRebuild
 }
@@ -105,6 +112,10 @@ func (s *windowsAutoupdateUpdater) Name() resource.Name {
 	return s.name
 }
 
+func (s *windowsAutoupdateUpdater) Status(context.Context) (map[string]interface{}, error) {
+	return map[string]interface{}{"download_status": s.downloadStatus}, nil
+}
+
 func (s *windowsAutoupdateUpdater) downloadIgnoringReturn(ctx context.Context) {
 	// s.downloadComplete = false
 	// s.downloadUpdate(ctx)
@@ -120,6 +131,7 @@ func (s *windowsAutoupdateUpdater) downloadUpdate(ctx context.Context) (string, 
 	var destination string
 	if s.cfg.DownloadDestination != "" {
 		destination = s.cfg.DownloadDestination
+		s.logger.Infof("Download destination : %s", destination)
 		if err := os.MkdirAll(destination, 0755); err != nil {
 			return "", err
 		}
@@ -147,6 +159,7 @@ func (s *windowsAutoupdateUpdater) downloadUpdate(ctx context.Context) (string, 
 		retryCount = math.MaxInt
 	}
 	for retries := 0; retries < retryCount; retries++ {
+		s.logger.Infof("Starting download attempt %d", retries)
 		resp := client.Do(req)
 
 		if freeSpace, err := getFreeDiskSpace(destination[:2]); err == nil {
@@ -164,9 +177,11 @@ func (s *windowsAutoupdateUpdater) downloadUpdate(ctx context.Context) (string, 
 		for {
 			select {
 			case <-t.C:
-				s.logger.Debugf("downloaded %v / %v bytes (%.2f%%)", resp.BytesComplete(), resp.Size(), 100*resp.Progress())
+				s.downloadStatus = fmt.Sprintf("downloaded %v / %v bytes (%.2f%%)", resp.BytesComplete(), resp.Size(), 100*resp.Progress())
+				s.logger.Debug(s.downloadStatus)
 			case <-resp.Done:
-				s.logger.Debugf("downloaded %v / %v bytes (%.2f%%)", resp.BytesComplete(), resp.Size(), 100*resp.Progress())
+				s.downloadStatus = fmt.Sprintf("download complete %v / %v bytes (%.2f%%)", resp.BytesComplete(), resp.Size(), 100*resp.Progress())
+				s.logger.Debug(s.downloadStatus)
 				break Loop
 			}
 		}
@@ -553,6 +568,20 @@ func (s *windowsAutoupdateUpdater) DoCommand(ctx context.Context, cmd map[string
 			s.cfg.DownloadURL = origDownloadURL
 		}(s.cfg.DownloadURL)
 		s.cfg.DownloadURL = downloadurl.(string)
+	}
+
+	// download_retry_count is the number of retries beyond the first attempt, matching the
+	// config field semantics. gRPC delivers numbers as float64. -1 is preserved (infinite).
+	retryCount, ok := cmd["download_retry_count"]
+	if ok {
+		defer func(origDownloadRetryCount int) {
+			s.cfg.DownloadRetryCount = origDownloadRetryCount
+		}(s.cfg.DownloadRetryCount)
+		n := int(retryCount.(float64))
+		if n != -1 {
+			n++
+		}
+		s.cfg.DownloadRetryCount = n
 	}
 
 	for utils.SelectContextOrWait(ctx, 1*time.Second) {
