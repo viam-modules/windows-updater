@@ -18,6 +18,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 	"time"
 	"unsafe"
 
@@ -79,6 +80,10 @@ type windowsAutoupdateUpdater struct {
 	downloadWorkers  utils.StoppableWorkers
 	downloadComplete bool
 	downloadStatus   string
+
+	// updateMu serializes DoCommand so concurrent calls can't run overlapping
+	// download/install cycles or race on the shared s.cfg overrides.
+	updateMu sync.Mutex
 
 	resource.AlwaysRebuild
 }
@@ -546,6 +551,14 @@ func (s *windowsAutoupdateUpdater) installUpdate(installer string) error {
 }
 
 func (s *windowsAutoupdateUpdater) DoCommand(ctx context.Context, cmd map[string]any) (map[string]any, error) {
+	// Only one DoCommand may run at a time. If we can't take the lock an
+	// update is already in progress, so reject rather than start a second,
+	// parallel download/install.
+	if !s.updateMu.TryLock() {
+		return nil, errors.New("an update is already in progress")
+	}
+	defer s.updateMu.Unlock()
+
 	// Some of the config parameters can be overridden dynamically
 	lookupkey, ok := cmd["registry_lookup_key"]
 	if ok {
