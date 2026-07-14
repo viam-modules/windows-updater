@@ -18,6 +18,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 	"time"
 	"unsafe"
 
@@ -53,6 +54,7 @@ type Config struct {
 	AbortOnUninstallErrors bool     `json:"abort_on_uninstall_errors"`
 	ForceInstall           bool     `json:"force_install"`
 	DownloadRetryCount     int      `json:"download_retry_count"`
+	DownloadOnly           bool     `json:"download_only"`
 }
 
 func (cfg *Config) Validate(path string) ([]string, []string, error) {
@@ -78,6 +80,10 @@ type windowsAutoupdateUpdater struct {
 	downloadWorkers  utils.StoppableWorkers
 	downloadComplete bool
 	downloadStatus   string
+
+	// updateMu serializes DoCommand so concurrent calls can't run overlapping
+	// download/install cycles or race on the shared s.cfg overrides.
+	updateMu sync.Mutex
 
 	resource.AlwaysRebuild
 }
@@ -545,6 +551,14 @@ func (s *windowsAutoupdateUpdater) installUpdate(installer string) error {
 }
 
 func (s *windowsAutoupdateUpdater) DoCommand(ctx context.Context, cmd map[string]any) (map[string]any, error) {
+	// Only one DoCommand may run at a time. If we can't take the lock an
+	// update is already in progress, so reject rather than start a second,
+	// parallel download/install.
+	if !s.updateMu.TryLock() {
+		return nil, errors.New("an update is already in progress")
+	}
+	defer s.updateMu.Unlock()
+
 	// Some of the config parameters can be overridden dynamically
 	lookupkey, ok := cmd["registry_lookup_key"]
 	if ok {
@@ -584,6 +598,14 @@ func (s *windowsAutoupdateUpdater) DoCommand(ctx context.Context, cmd map[string
 		s.cfg.DownloadRetryCount = n
 	}
 
+	downloadOnly, ok := cmd["download_only"]
+	if ok {
+		defer func(origDownloadOnly bool) {
+			s.cfg.DownloadOnly = origDownloadOnly
+		}(s.cfg.DownloadOnly)
+		s.cfg.DownloadOnly = downloadOnly.(bool)
+	}
+
 	for utils.SelectContextOrWait(ctx, 1*time.Second) {
 		if s.downloadComplete {
 			break
@@ -594,6 +616,14 @@ func (s *windowsAutoupdateUpdater) DoCommand(ctx context.Context, cmd map[string
 	if err != nil {
 		return nil, err
 	}
+
+	// When download_only is set, keep the downloaded binary in place and skip
+	// the find-installer / uninstall / install steps.
+	if s.cfg.DownloadOnly {
+		s.logger.Infof("download_only is set, downloaded update to %s", update)
+		return map[string]any{"downloaded": update}, nil
+	}
+
 	defer os.Remove(update)
 
 	// Check if installer exists before uninstalling anything
