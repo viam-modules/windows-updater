@@ -5,8 +5,8 @@ go 1.25.10
 require (
 	github.com/cavaliergopher/grab/v3 v3.0.1
 	github.com/stretchr/testify v1.11.1
-	go.viam.com/rdk v1.10.0
-	go.viam.com/utils v0.13.0
+	go.viam.com/rdk v1.11.0
+	go.viam.com/utils v0.13.2
 	golang.org/x/sys v0.47.0
 )
 
