@@ -170,7 +170,7 @@ func (s *windowsAutoupdateUpdater) downloadUpdate(ctx context.Context) (string, 
 
 		if freeSpace, err := getFreeDiskSpace(destination[:2]); err == nil {
 			if freeSpace < uint64(resp.Size()*3) {
-				resp.Cancel()
+				_ = resp.Cancel()
 				return "", fmt.Errorf("not enough free space on drive %s: %d bytes available, %d bytes needed", destination[:2], freeSpace, resp.Size()*3)
 			}
 		}
@@ -198,8 +198,6 @@ func (s *windowsAutoupdateUpdater) downloadUpdate(ctx context.Context) (string, 
 			time.Sleep(10 * time.Second)
 			continue
 		}
-		downloadErr = nil
-
 		// save download details
 		cacheDetails := cacheDetails{
 			DownloadURL:   s.cfg.DownloadURL,
@@ -207,7 +205,9 @@ func (s *windowsAutoupdateUpdater) downloadUpdate(ctx context.Context) (string, 
 			ETag:          resp.HTTPResponse.Header.Get("etag"),
 			Installed:     false,
 		}
-		s.setCacheDetails(cacheDetails)
+		if err := s.setCacheDetails(cacheDetails); err != nil {
+			s.logger.Warnf("could not save cache details: %v", err)
+		}
 
 		// success
 		s.logger.Infof("update saved to %s", resp.Filename)
@@ -264,7 +264,7 @@ func (s *windowsAutoupdateUpdater) getCacheDetailsFile() (string, error) {
 	if err != nil {
 		return "", err
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	return cacheFile, nil
 }
 
@@ -277,7 +277,7 @@ func (s *windowsAutoupdateUpdater) getCacheDetails() cacheDetails {
 	if err != nil {
 		return cacheDetails{}
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	var details cacheDetails
 	if err := json.NewDecoder(f).Decode(&details); err != nil {
 		return cacheDetails{}
@@ -294,7 +294,7 @@ func (s *windowsAutoupdateUpdater) setCacheDetails(details cacheDetails) error {
 	if err != nil {
 		return err
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	if err := json.NewEncoder(f).Encode(details); err != nil {
 		return err
 	}
@@ -318,7 +318,7 @@ func unzipUpdate(src, dest string, logger logging.Logger) error {
 	if err != nil {
 		return err
 	}
-	defer r.Close()
+	defer func() { _ = r.Close() }()
 
 	if err := os.MkdirAll(dest, 0755); err != nil {
 		return err
@@ -327,33 +327,37 @@ func unzipUpdate(src, dest string, logger logging.Logger) error {
 	extractAndWriteFile := func(f *zip.File) error {
 		rc, err := f.Open()
 		if err != nil {
-			os.RemoveAll(dest)
+			_ = os.RemoveAll(dest)
 			return err
 		}
-		defer rc.Close()
+		defer func() { _ = rc.Close() }()
 
 		p := filepath.Join(dest, f.Name)
 
 		// Check for ZipSlip (Directory traversal)
 		if !strings.HasPrefix(p, filepath.Clean(dest)+string(os.PathSeparator)) {
-			os.RemoveAll(dest)
+			_ = os.RemoveAll(dest)
 			return fmt.Errorf("illegal file path: %s", p)
 		}
 
 		if f.FileInfo().IsDir() {
-			os.MkdirAll(p, f.Mode())
-		} else {
-			os.MkdirAll(filepath.Dir(p), f.Mode())
-			f, err := os.OpenFile(p, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, f.Mode())
-			if err != nil {
-				os.RemoveAll(dest)
+			if err := os.MkdirAll(p, f.Mode()); err != nil {
 				return err
 			}
-			defer f.Close()
+		} else {
+			if err := os.MkdirAll(filepath.Dir(p), f.Mode()); err != nil {
+				return err
+			}
+			f, err := os.OpenFile(p, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, f.Mode())
+			if err != nil {
+				_ = os.RemoveAll(dest)
+				return err
+			}
+			defer func() { _ = f.Close() }()
 
 			_, err = io.Copy(f, rc)
 			if err != nil {
-				os.RemoveAll(dest)
+				_ = os.RemoveAll(dest)
 				return err
 			}
 		}
@@ -383,7 +387,7 @@ func (s *windowsAutoupdateUpdater) findInstaller(src string) (string, string, er
 		dest := strings.TrimSuffix(src, path.Ext(src))
 		err := unzipUpdate(src, dest, s.logger)
 		if err != nil {
-			os.RemoveAll(dest)
+			_ = os.RemoveAll(dest)
 			return "", "", err
 		}
 		src = dest
@@ -398,7 +402,7 @@ func (s *windowsAutoupdateUpdater) findInstaller(src string) (string, string, er
 		if s.cfg.InstallerPath != "" {
 			installerPath := filepath.Join(src, s.cfg.InstallerPath)
 			if _, err := os.Stat(installerPath); err != nil {
-				os.RemoveAll(src)
+				_ = os.RemoveAll(src)
 				return "", "", fmt.Errorf("could not find installer at %s: %w", installerPath, err)
 			}
 			return installerPath, src, nil
@@ -406,7 +410,7 @@ func (s *windowsAutoupdateUpdater) findInstaller(src string) (string, string, er
 
 		files, err := os.ReadDir(src)
 		if err != nil {
-			os.RemoveAll(src)
+			_ = os.RemoveAll(src)
 			return "", "", err
 		}
 		for _, file := range files {
@@ -447,7 +451,7 @@ func (s *windowsAutoupdateUpdater) uninstallExistingInstallation() error {
 			s.logger.Debugf("error checking registry at %s: %w", key_name, err)
 			continue
 		}
-		defer k.Close()
+		defer func() { _ = k.Close() }()
 
 		subkeys, err := k.ReadSubKeyNames(0)
 		if err != nil {
@@ -461,7 +465,7 @@ func (s *windowsAutoupdateUpdater) uninstallExistingInstallation() error {
 				s.logger.Debugf("error opening subkey %s: %w", subkey, err)
 				continue
 			}
-			defer sk.Close()
+			defer func() { _ = sk.Close() }()
 
 			lookupValue, _, err := sk.GetStringValue(s.cfg.RegistryLookupKey)
 			if err != nil {
@@ -624,7 +628,7 @@ func (s *windowsAutoupdateUpdater) DoCommand(ctx context.Context, cmd map[string
 		return map[string]any{"downloaded": update}, nil
 	}
 
-	defer os.Remove(update)
+	defer func() { _ = os.Remove(update) }()
 
 	// Check if installer exists before uninstalling anything
 	installer, dir, err := s.findInstaller(update)
@@ -633,9 +637,9 @@ func (s *windowsAutoupdateUpdater) DoCommand(ctx context.Context, cmd map[string
 	}
 	defer func() {
 		if dir != "" {
-			os.RemoveAll(dir)
+			_ = os.RemoveAll(dir)
 		} else {
-			os.RemoveAll(installer)
+			_ = os.RemoveAll(installer)
 		}
 	}()
 
@@ -676,7 +680,7 @@ func LaunchInActiveUserSession(appPath string, wait bool) (uint32, error) {
 	if err := windows.WTSQueryUserToken(sessionID, &userToken); err != nil {
 		return 0, fmt.Errorf("WTSQueryUserToken(session=%d): %w", sessionID, err)
 	}
-	defer userToken.Close()
+	defer func() { _ = userToken.Close() }()
 
 	// 2) Duplicate token to PRIMARY token for CreateProcessAsUser
 	var primaryToken windows.Token
@@ -690,7 +694,7 @@ func LaunchInActiveUserSession(appPath string, wait bool) (uint32, error) {
 	); err != nil {
 		return 0, fmt.Errorf("DuplicateTokenEx: %w", err)
 	}
-	defer primaryToken.Close()
+	defer func() { _ = primaryToken.Close() }()
 
 	// 3) Build environment block (optional but recommended for "acts like a user" behavior)
 	var env *uint16
@@ -698,7 +702,7 @@ func LaunchInActiveUserSession(appPath string, wait bool) (uint32, error) {
 		// Not fatal; some environments block this. Proceed without it.
 		env = nil
 	} else {
-		defer windows.DestroyEnvironmentBlock(env)
+		defer func() { _ = windows.DestroyEnvironmentBlock(env) }()
 	}
 
 	// 4) Prepare StartupInfo / ProcessInformation
@@ -727,6 +731,9 @@ func LaunchInActiveUserSession(appPath string, wait bool) (uint32, error) {
 
 	var dirPtr *uint16
 	dirPtr, err = windows.UTF16PtrFromString(`C:\Windows\Temp`)
+	if err != nil {
+		return 0, fmt.Errorf("UTF16PtrFromString(dir): %w", err)
+	}
 
 	// 6) Create the process as the user.
 	if err := windows.CreateProcessAsUser(
