@@ -448,28 +448,28 @@ func (s *windowsAutoupdateUpdater) uninstallExistingInstallation() error {
 	for _, key_name := range keys {
 		k, err := registry.OpenKey(registry.LOCAL_MACHINE, key_name, registry.READ)
 		if err != nil {
-			s.logger.Debugf("error checking registry at %s: %w", key_name, err)
+			s.logger.Debugf("error checking registry at %s: %v", key_name, err)
 			continue
 		}
 		defer func() { _ = k.Close() }()
 
 		subkeys, err := k.ReadSubKeyNames(0)
 		if err != nil {
-			s.logger.Debugf("error getting subkeys for %s: %w", key_name, err)
+			s.logger.Debugf("error getting subkeys for %s: %v", key_name, err)
 			continue
 		}
 		for _, subkey := range subkeys {
 			s.logger.Debugf("checking registry key: %s\\%s", key_name, subkey)
 			sk, err := registry.OpenKey(registry.LOCAL_MACHINE, fmt.Sprintf(`%s\%s`, key_name, subkey), registry.READ)
 			if err != nil {
-				s.logger.Debugf("error opening subkey %s: %w", subkey, err)
+				s.logger.Debugf("error opening subkey %s: %v", subkey, err)
 				continue
 			}
 			defer func() { _ = sk.Close() }()
 
 			lookupValue, _, err := sk.GetStringValue(s.cfg.RegistryLookupKey)
 			if err != nil {
-				s.logger.Debugf("error getting value for key %s\\%s - %s: %w", key_name, subkey, s.cfg.RegistryLookupKey, err)
+				s.logger.Debugf("error getting value for key %s\\%s - %s: %v", key_name, subkey, s.cfg.RegistryLookupKey, err)
 				continue
 			}
 			if lookupValue == s.cfg.RegistryLookupValue {
