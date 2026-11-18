@@ -1,5 +1,5 @@
 module.tar.gz:
-	GOOS=windows GOARCH=amd64 go build -ldflags="-s -w" .
+	GOOS=windows GOARCH=amd64 go build -tags no_cgo -ldflags="-s -w" .
 	rm -f $@
 	tar czf $@ meta.json windows_autoupdate.exe
 

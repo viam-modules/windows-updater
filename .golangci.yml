@@ -5,3 +5,7 @@ version: "2"
 formatters:
   enable:
     - gofmt
+
+run:
+  build-tags:
+    - no_cgo
