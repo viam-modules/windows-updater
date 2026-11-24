@@ -54,7 +54,7 @@ jobs:
           go-version-file: go.mod
 
       - name: Build
-        run: GOOS=windows go build ./...
+        run: make module.tar.gz
 
   # The models package imports golang.org/x/sys/windows, so its tests only
   # build and run on Windows.
